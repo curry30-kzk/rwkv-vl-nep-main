@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+*.log
+.env
+venv/
+hf_cache/
+data/
+pilot_data/
+
+# 不提交训练大文件
+outputs/**/checkpoint-*/
+outputs/**/optimizer.pt
+outputs/**/scheduler.pt
+outputs/**/scaler.pt
+outputs/**/rng_state*.pth
+outputs/**/pytorch_model*.bin
+outputs/**/*.pt
+outputs/**/*.bin
+outputs/**/*.safetensors
+outputs/**/*.pth
+*.pt
+*.bin
+*.safetensors
+*.pth

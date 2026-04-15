@@ -1,0 +1,74 @@
+{
+  "best_global_step": null,
+  "best_metric": null,
+  "best_model_checkpoint": null,
+  "epoch": 1.0,
+  "eval_steps": 500,
+  "global_step": 32,
+  "is_hyper_param_search": false,
+  "is_local_process_zero": true,
+  "is_world_process_zero": true,
+  "log_history": [
+    {
+      "epoch": 0.3125,
+      "grad_norm": 0.1570645570755005,
+      "learning_rate": 7.1875e-05,
+      "loss": -0.5884,
+      "step": 10
+    },
+    {
+      "epoch": 0.625,
+      "grad_norm": 0.11209838837385178,
+      "learning_rate": 4.0625000000000005e-05,
+      "loss": -0.7021,
+      "step": 20
+    },
+    {
+      "epoch": 0.9375,
+      "grad_norm": 0.10784143209457397,
+      "learning_rate": 9.375000000000001e-06,
+      "loss": -0.7172,
+      "step": 30
+    },
+    {
+      "ema_model_saved": "./debug_imagenet_rwkv/checkpoint-32/pytorch_model_ema.bin",
+      "epoch": 1.0,
+      "step": 32
+    },
+    {
+      "epoch": 1.0,
+      "step": 32,
+      "total_flos": 2.1403228906192896e+16,
+      "train_loss": -0.672761794179678,
+      "train_runtime": 109.8111,
+      "train_samples_per_second": 2.331,
+      "train_steps_per_second": 0.291
+    },
+    {
+      "ema_model_saved": "./debug_imagenet_rwkv/pytorch_model_ema.bin",
+      "epoch": 1.0,
+      "step": 32
+    }
+  ],
+  "logging_steps": 10,
+  "max_steps": 32,
+  "num_input_tokens_seen": 0,
+  "num_train_epochs": 1,
+  "save_steps": 1000,
+  "stateful_callbacks": {
+    "TrainerControl": {
+      "args": {
+        "should_epoch_stop": false,
+        "should_evaluate": false,
+        "should_log": false,
+        "should_save": true,
+        "should_training_stop": true
+      },
+      "attributes": {}
+    }
+  },
+  "total_flos": 2.1403228906192896e+16,
+  "train_batch_size": 8,
+  "trial_name": null,
+  "trial_params": null
+}

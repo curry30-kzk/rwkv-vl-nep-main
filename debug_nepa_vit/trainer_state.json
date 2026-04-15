@@ -1,0 +1,74 @@
+{
+  "best_global_step": null,
+  "best_metric": null,
+  "best_model_checkpoint": null,
+  "epoch": 1.0,
+  "eval_steps": 500,
+  "global_step": 16,
+  "is_hyper_param_search": false,
+  "is_local_process_zero": true,
+  "is_world_process_zero": true,
+  "log_history": [
+    {
+      "epoch": 0.3125,
+      "grad_norm": 0.09678713977336884,
+      "learning_rate": 7.500000000000001e-05,
+      "loss": -0.7322,
+      "step": 5
+    },
+    {
+      "epoch": 0.625,
+      "grad_norm": 0.10332303494215012,
+      "learning_rate": 4.375e-05,
+      "loss": -0.6664,
+      "step": 10
+    },
+    {
+      "epoch": 0.9375,
+      "grad_norm": 0.09808703511953354,
+      "learning_rate": 1.25e-05,
+      "loss": -0.7505,
+      "step": 15
+    },
+    {
+      "ema_model_saved": "./debug_nepa_vit/checkpoint-16/pytorch_model_ema.bin",
+      "epoch": 1.0,
+      "step": 16
+    },
+    {
+      "epoch": 1.0,
+      "step": 16,
+      "total_flos": 4943727877423104.0,
+      "train_loss": -0.7101237624883652,
+      "train_runtime": 3.6352,
+      "train_samples_per_second": 17.606,
+      "train_steps_per_second": 4.401
+    },
+    {
+      "ema_model_saved": "./debug_nepa_vit/pytorch_model_ema.bin",
+      "epoch": 1.0,
+      "step": 16
+    }
+  ],
+  "logging_steps": 5,
+  "max_steps": 16,
+  "num_input_tokens_seen": 0,
+  "num_train_epochs": 1,
+  "save_steps": 1000,
+  "stateful_callbacks": {
+    "TrainerControl": {
+      "args": {
+        "should_epoch_stop": false,
+        "should_evaluate": false,
+        "should_log": false,
+        "should_save": true,
+        "should_training_stop": true
+      },
+      "attributes": {}
+    }
+  },
+  "total_flos": 4943727877423104.0,
+  "train_batch_size": 4,
+  "trial_name": null,
+  "trial_params": null
+}

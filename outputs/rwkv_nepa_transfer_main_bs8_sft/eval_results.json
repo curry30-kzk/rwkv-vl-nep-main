@@ -1,0 +1,13 @@
+{
+    "epoch": 10.0,
+    "eval_accuracy": 0.59176,
+    "eval_ema_accuracy": 0.52108,
+    "eval_ema_loss": 2.265913963317871,
+    "eval_ema_runtime": 232.9222,
+    "eval_ema_samples_per_second": 214.664,
+    "eval_ema_steps_per_second": 2.237,
+    "eval_loss": 1.8891183137893677,
+    "eval_runtime": 256.4974,
+    "eval_samples_per_second": 194.934,
+    "eval_steps_per_second": 2.031
+}
