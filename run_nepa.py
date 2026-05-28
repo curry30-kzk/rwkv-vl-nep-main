@@ -25,6 +25,8 @@
 import logging
 import os
 import sys
+import bisect
+import json
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -75,6 +77,75 @@ def pil_loader(path: str):
         return im.convert("RGB")
 
 
+class PreprocessedUint8NpyDataset(torch.utils.data.Dataset):
+    def __init__(self, data_dir: str, max_samples: Optional[int] = None):
+        self.data_dir = os.path.abspath(data_dir)
+        metadata_path = os.path.join(self.data_dir, "metadata.json")
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            self.metadata = json.load(f)
+
+        if self.metadata.get("format") != "rwkv_nepa_uint8_npy_shards":
+            raise ValueError(f"Unsupported preprocessed data format in {metadata_path}")
+        if self.metadata.get("image_dtype") != "uint8":
+            raise ValueError("Expected image_dtype='uint8' in metadata.json")
+        if self.metadata.get("label_dtype") != "int64":
+            raise ValueError("Expected label_dtype='int64' in metadata.json")
+
+        self.image_shape = tuple(self.metadata["image_shape"])
+        self.shards = []
+        self.cumulative_sizes = []
+        remaining = max_samples
+        total = 0
+
+        for shard in self.metadata["shards"]:
+            shard_samples = int(shard["num_samples"])
+            if remaining is not None:
+                if remaining <= 0:
+                    break
+                shard_samples = min(shard_samples, remaining)
+                remaining -= shard_samples
+
+            image_path = self._resolve_path(shard["images"])
+            label_path = self._resolve_path(shard["labels"])
+            images = np.load(image_path, mmap_mode="r")
+            labels = np.load(label_path, mmap_mode="r")
+
+            expected_shape = (int(shard["num_samples"]),) + self.image_shape
+            if tuple(images.shape) != expected_shape:
+                raise ValueError(f"{image_path} shape {images.shape} != expected {expected_shape}")
+            if labels.shape[0] != int(shard["num_samples"]):
+                raise ValueError(f"{label_path} length {labels.shape[0]} != {shard['num_samples']}")
+
+            self.shards.append((images, labels, shard_samples))
+            total += shard_samples
+            self.cumulative_sizes.append(total)
+
+        if total <= 0:
+            raise ValueError(f"No samples found in preprocessed data dir: {self.data_dir}")
+        self.num_samples = total
+
+    def _resolve_path(self, path: str) -> str:
+        return path if os.path.isabs(path) else os.path.join(self.data_dir, path)
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, index: int):
+        if index < 0:
+            index += self.num_samples
+        if index < 0 or index >= self.num_samples:
+            raise IndexError(index)
+
+        shard_idx = bisect.bisect_right(self.cumulative_sizes, index)
+        previous = 0 if shard_idx == 0 else self.cumulative_sizes[shard_idx - 1]
+        local_idx = index - previous
+        images, labels, _shard_samples = self.shards[shard_idx]
+        return {
+            "pixel_values": images[local_idx],
+            "labels": int(labels[local_idx]),
+        }
+
+
 class EnhancedTrainer(Trainer):
     def __init__(
         self,
@@ -82,15 +153,28 @@ class EnhancedTrainer(Trainer):
         embed_lr=None,
         ema_decay=0.9999,
         use_ema=True,
+        ema_update_interval=1,
         **kwargs
     ):
         super().__init__(*args, **kwargs)
         self.embed_lr = embed_lr
         self.ema_decay = ema_decay
         self.use_ema = use_ema
+        self.ema_update_interval = max(1, int(ema_update_interval or 1))
         self.ema_model = None
+        self._ema_global_step = 0
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        pixel_values = inputs.get("pixel_values")
+        if isinstance(pixel_values, torch.Tensor) and pixel_values.dtype == torch.uint8:
+            device = next(model.parameters()).device
+            if pixel_values.device != device:
+                pixel_values = pixel_values.to(device=device, non_blocking=True)
+            pixel_values = pixel_values.float().div(255.0)
+            pixel_values = pixel_values.sub(0.5).div(0.5)
+            inputs = dict(inputs)
+            inputs["pixel_values"] = pixel_values
+
         loss, outputs = super().compute_loss(
             model,
             inputs,
@@ -174,22 +258,27 @@ class EnhancedTrainer(Trainer):
             for p in self.ema_model.parameters():
                 p.requires_grad_(False)
 
-    def _update_ema(self):
+    def _update_ema(self, force: bool = False):
         if not self.use_ema:
+            return
+        current_step = int(getattr(self.state, "global_step", 0) or 0)
+        if current_step <= self._ema_global_step:
+            return
+        if not force and (current_step % self.ema_update_interval) != 0:
             return
         if self.ema_model is None:
             self._init_ema_model()
+        decay = self.ema_decay ** max(1, current_step - self._ema_global_step)
         with torch.no_grad():
             msd = self.model.state_dict()
             for k, v in self.ema_model.state_dict().items():
                 if k in msd:
                     model_param = msd[k].float()
-                    v.mul_(self.ema_decay).add_(model_param, alpha=1.0 - self.ema_decay)
+                    v.mul_(decay).add_(model_param, alpha=1.0 - decay)
+        self._ema_global_step = current_step
 
     def _maybe_log_save_evaluate(self, *args, **kwargs):
-        if self.state.global_step > getattr(self, "_ema_global_step", 0):
-            self._update_ema()
-            self._ema_global_step = self.state.global_step
+        self._update_ema()
         super()._maybe_log_save_evaluate(*args, **kwargs)
 
     def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval", **gen_kwargs):
@@ -221,6 +310,7 @@ class EnhancedTrainer(Trainer):
         return out
 
     def save_model(self, output_dir=None, _internal_call=False):
+        self._update_ema(force=True)
         super().save_model(output_dir, _internal_call)
         output_dir = output_dir if output_dir is not None else self.args.output_dir
         if self.use_ema and self.ema_model is not None and self.args.should_save:
@@ -242,6 +332,14 @@ class EnhancedTrainer(Trainer):
                         p.requires_grad_(False)
                 state_dict = torch.load(ema_ckpt, map_location="cpu")
                 missing, unexpected = self.ema_model.load_state_dict(state_dict, strict=False)
+                self._ema_global_step = int(getattr(self.state, "global_step", 0) or 0)
+                if self._ema_global_step == 0:
+                    checkpoint_name = os.path.basename(os.path.normpath(resume_from_checkpoint))
+                    if checkpoint_name.startswith("checkpoint-"):
+                        try:
+                            self._ema_global_step = int(checkpoint_name.split("-")[-1])
+                        except ValueError:
+                            self._ema_global_step = 0
                 if missing or unexpected:
                     print(f"[EMA] Missing keys: {missing}, Unexpected keys: {unexpected}")
             else:
@@ -292,14 +390,26 @@ class DataTrainingArguments:
         default="image",
         metadata={"help": "The name of the dataset column containing the image data. Defaults to 'image'."},
     )
-    # label_column_name: str = field(
-    #     default="label",
-    #     metadata={"help": "The name of the dataset column containing the labels. Defaults to 'label'."},
-    # )
+    label_column_name: str = field(
+        default="label",
+        metadata={"help": "The name of the dataset column containing the labels. Defaults to 'label'."},
+    )
     load_from_disk: bool = field(default=False, metadata={"help": "Load from disk"})
     keep_in_memory: bool = field(default=False, metadata={"help": "keep_in_memory"})
+    use_preprocessed_uint8: bool = field(
+        default=False,
+        metadata={"help": "Use offline uint8 npy/mmap shards instead of Arrow image decoding/transforms."},
+    )
+    preprocessed_data_dir: Optional[str] = field(
+        default=None,
+        metadata={"help": "Directory containing metadata.json plus images_*.npy and labels_*.npy shards."},
+    )
 
     def __post_init__(self):
+        if self.use_preprocessed_uint8:
+            if self.preprocessed_data_dir is None:
+                raise ValueError("--preprocessed_data_dir is required when --use_preprocessed_uint8 True")
+            return
         if self.dataset_name is None and (self.train_dir is None and self.validation_dir is None):
             raise ValueError(
                 "You must specify either a dataset name from the hub or a train and/or validation directory."
@@ -362,6 +472,18 @@ class ModelArguments:
         default=None,
         metadata={"help": "Freeze/unfreeze parameters via model._set_trainable (timemix|all|none)."},
     )
+    use_ema: bool = field(
+        default=True,
+        metadata={"help": "Whether to maintain an EMA copy of the pretraining model."},
+    )
+    ema_decay: float = field(
+        default=0.9999,
+        metadata={"help": "EMA decay for pretraining."},
+    )
+    ema_update_interval: int = field(
+        default=1,
+        metadata={"help": "Update EMA every N optimizer steps. Use 1 to match the paper setting."},
+    )
 
 
 def main():
@@ -420,7 +542,19 @@ def main():
     set_seed(training_args.seed)
 
     # Initialize our dataset and prepare it for the 'image-classification' task.
-    if data_args.dataset_name is not None:
+    if data_args.use_preprocessed_uint8:
+        dataset = {
+            "train": PreprocessedUint8NpyDataset(
+                data_args.preprocessed_data_dir,
+                max_samples=data_args.max_train_samples,
+            )
+        }
+        logger.info(
+            "Using preprocessed uint8 npy shards from %s with %d training samples",
+            data_args.preprocessed_data_dir,
+            len(dataset["train"]),
+        )
+    elif data_args.dataset_name is not None:
         if data_args.load_from_disk:
             dataset = load_from_disk(data_args.dataset_name, keep_in_memory=data_args.keep_in_memory)
         else:
@@ -443,19 +577,21 @@ def main():
             cache_dir=model_args.cache_dir,
         )
 
-    dataset_column_names = dataset["train"].column_names if "train" in dataset else dataset["validation"].column_names
-    if data_args.image_column_name not in dataset_column_names:
-        raise ValueError(
-            f"--image_column_name {data_args.image_column_name} not found in dataset '{data_args.dataset_name}'. "
-            "Make sure to set `--image_column_name` to the correct audio column - one of "
-            f"{', '.join(dataset_column_names)}."
-        )
-    # if data_args.label_column_name not in dataset_column_names:
-    #     raise ValueError(
-    #         f"--label_column_name {data_args.label_column_name} not found in dataset '{data_args.dataset_name}'. "
-    #         "Make sure to set `--label_column_name` to the correct text column - one of "
-    #         f"{', '.join(dataset_column_names)}."
-    #     )
+    if not data_args.use_preprocessed_uint8:
+        dataset_column_names = dataset["train"].column_names if "train" in dataset else dataset["validation"].column_names
+        if data_args.image_column_name not in dataset_column_names:
+            raise ValueError(
+                f"--image_column_name {data_args.image_column_name} not found in dataset '{data_args.dataset_name}'. "
+                "Make sure to set `--image_column_name` to the correct image column - one of "
+                f"{', '.join(dataset_column_names)}."
+            )
+        if data_args.label_column_name not in dataset_column_names:
+            logger.warning(
+                "--label_column_name %s not found in dataset columns %s. "
+                "Pretraining does not require labels, so continuing.",
+                data_args.label_column_name,
+                dataset_column_names,
+            )
 
     def collate_fn(examples):
         pixel_values = torch.stack([example["pixel_values"] for example in examples])
@@ -463,8 +599,13 @@ def main():
         # labels = torch.tensor([example[data_args.label_column_name] for example in examples])
         # return {"pixel_values": pixel_values, "labels": labels}
 
+    def preprocessed_uint8_collate_fn(examples):
+        pixel_values = torch.from_numpy(np.stack([example["pixel_values"] for example in examples], axis=0))
+        labels = torch.tensor([example["labels"] for example in examples], dtype=torch.long)
+        return {"pixel_values": pixel_values, "labels": labels}
+
     # If we don't have a validation split, split off a percentage of train as validation.
-    data_args.train_val_split = None if "validation" in dataset else data_args.train_val_split
+    data_args.train_val_split = None if data_args.use_preprocessed_uint8 or "validation" in dataset else data_args.train_val_split
     if isinstance(data_args.train_val_split, float) and data_args.train_val_split > 0.0:
         split = dataset["train"].train_test_split(data_args.train_val_split)
         dataset["train"] = split["train"]
@@ -617,12 +758,13 @@ def main():
     if training_args.do_train:
         if "train" not in dataset:
             raise ValueError("--do_train requires a train dataset")
-        if data_args.max_train_samples is not None:
+        if data_args.max_train_samples is not None and not data_args.use_preprocessed_uint8:
             dataset["train"] = (
                 dataset["train"].shuffle(seed=training_args.seed).select(range(data_args.max_train_samples))
             )
-        # Set the training transforms
-        dataset["train"].set_transform(train_transforms)
+        if not data_args.use_preprocessed_uint8:
+            # Set the training transforms
+            dataset["train"].set_transform(train_transforms)
 
     if training_args.do_eval:
         if "validation" not in dataset:
@@ -631,8 +773,9 @@ def main():
             dataset["validation"] = (
                 dataset["validation"].shuffle(seed=training_args.seed).select(range(data_args.max_eval_samples))
             )
-        # Set the validation transforms
-        dataset["validation"].set_transform(val_transforms)
+        if not data_args.use_preprocessed_uint8:
+            # Set the validation transforms
+            dataset["validation"].set_transform(val_transforms)
 
     # Initialize our trainer
     trainer = EnhancedTrainer(
@@ -642,8 +785,11 @@ def main():
         eval_dataset=dataset["validation"] if training_args.do_eval else None,
         # compute_metrics=compute_metrics,
         processing_class=image_processor,
-        data_collator=collate_fn,
+        data_collator=preprocessed_uint8_collate_fn if data_args.use_preprocessed_uint8 else collate_fn,
         embed_lr=model_args.embed_lr,
+        ema_decay=model_args.ema_decay,
+        use_ema=model_args.use_ema,
+        ema_update_interval=model_args.ema_update_interval,
     )
 
     # Training

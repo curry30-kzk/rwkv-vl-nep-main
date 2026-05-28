@@ -22,3 +22,59 @@ outputs/**/*.pth
 *.bin
 *.safetensors
 *.pth
+
+# local data / model / outputs
+data/
+datasets/
+checkpoints/
+ckpt/
+outputs/
+output/
+runs/
+wandb/
+logs/
+*.log
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+
+# env
+.env
+.env.*
+.venv/
+venv/
+
+# cache
+__pycache__/
+*.py[cod]
+.cache/
+
+# generated debug / experiment dirs
+debug_*/
+outputs*/
+figures*/
+init_models/
+processed_data/
+
+# local kernel / extension cache
+.kernel_pkg_test/
+.rwkv_bf16_patch/
+.torch_extensions_rwkv/
+torch_extensions/
+env_backup*/
+
+# numpy / dataset artifacts
+*.npy
+*.npz
+*.arrow
+*.parquet
+*.tar
+*.tar.gz
+*.zip
+
+# backup files
+*.bak
+*.bak_*
+*.tmp

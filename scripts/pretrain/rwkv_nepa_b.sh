@@ -66,14 +66,26 @@ fi
 : "${WEIGHT_DECAY:=0.05}"
 : "${WARMUP_RATIO:=0.025}"
 : "${LR_SCHEDULER_TYPE:=cosine}"
+: "${OPTIM:=adamw_torch}"
 
 : "${LOGGING_STEPS:=50}"
 : "${SAVE_STRATEGY:=steps}"
 : "${SAVE_STEPS:=1000}"
 : "${DATALOADER_NUM_WORKERS:=20}"
+: "${DATALOADER_PERSISTENT_WORKERS:=True}"
+: "${DATALOADER_PIN_MEMORY:=False}"
 
-# 新增：严格续训支持
+# Strict resume support.
 : "${RESUME_FROM_CHECKPOINT:=}"
+
+# Optional uint8 npy/mmap preprocessing experiment. Defaults keep the original Arrow path unchanged.
+: "${USE_PREPROCESSED_UINT8:=False}"
+: "${PREPROCESSED_DATA_DIR:=}"
+
+# Optional pretraining EMA controls exposed by run_nepa.py.
+: "${USE_EMA:=True}"
+: "${EMA_DECAY:=0.9999}"
+: "${EMA_UPDATE_INTERVAL:=1}"
 
 if ! [[ "${TOTAL_BATCH_SIZE}" =~ ^[0-9]+$ ]]; then
     echo "[ERROR] TOTAL_BATCH_SIZE must be an integer, got: ${TOTAL_BATCH_SIZE}"
@@ -164,10 +176,10 @@ fi
 
 DEEPSPEED_ARGS=()
 if [[ "${USE_DEEPSPEED}" == "1" ]]; then
-    python - <<'PY' >/dev/null 2>&1
+    if ! python - <<'PY' >/dev/null 2>&1
 import deepspeed  # noqa: F401
 PY
-    if [[ $? -ne 0 ]]; then
+    then
         echo "[ERROR] USE_DEEPSPEED=1 but DeepSpeed is not installed in the current environment."
         exit 1
     fi
@@ -221,6 +233,21 @@ if [[ -n "${RESUME_FROM_CHECKPOINT}" ]]; then
     RESUME_ARGS+=(--resume_from_checkpoint "${RESUME_FROM_CHECKPOINT}")
 fi
 
+PREPROCESSED_ARGS=()
+if [[ "${USE_PREPROCESSED_UINT8,,}" == "true" || "${USE_PREPROCESSED_UINT8}" == "1" ]]; then
+    if [[ -z "${PREPROCESSED_DATA_DIR}" ]]; then
+        echo "[ERROR] PREPROCESSED_DATA_DIR is required when USE_PREPROCESSED_UINT8=True."
+        exit 1
+    fi
+    PREPROCESSED_ARGS+=(--use_preprocessed_uint8 True --preprocessed_data_dir "${PREPROCESSED_DATA_DIR}")
+fi
+
+EMA_ARGS=(
+    --use_ema "${USE_EMA}"
+    --ema_decay "${EMA_DECAY}"
+    --ema_update_interval "${EMA_UPDATE_INTERVAL}"
+)
+
 echo "[INFO] EXPERIMENT_NAME=${EXPERIMENT_NAME}"
 echo "[INFO] OUTPUT_DIR=${OUTPUT_DIR}"
 echo "[INFO] NGPU=${NGPU}, WORLD_SIZE=${WORLD_SIZE}, RANK=${RANK}"
@@ -230,6 +257,9 @@ echo "[INFO] DDP_FIND_UNUSED_PARAMETERS=${DDP_FIND_UNUSED_PARAMETERS}"
 echo "[INFO] DATASET_PATH=${DATASET_PATH}"
 echo "[INFO] MAX_STEPS=${MAX_STEPS}, NUM_EPOCHS=${NUM_EPOCHS}"
 echo "[INFO] LOGGING_STEPS=${LOGGING_STEPS}, SAVE_STRATEGY=${SAVE_STRATEGY}, SAVE_STEPS=${SAVE_STEPS}"
+echo "[INFO] OPTIM=${OPTIM}"
+echo "[INFO] DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS}, DATALOADER_PERSISTENT_WORKERS=${DATALOADER_PERSISTENT_WORKERS}, DATALOADER_PIN_MEMORY=${DATALOADER_PIN_MEMORY}"
+echo "[INFO] USE_EMA=${USE_EMA}, EMA_DECAY=${EMA_DECAY}, EMA_UPDATE_INTERVAL=${EMA_UPDATE_INTERVAL}"
 if [[ -n "${MODEL_NAME_OR_PATH}" ]]; then
     echo "[INFO] MODEL_NAME_OR_PATH=${MODEL_NAME_OR_PATH}"
 fi
@@ -241,6 +271,10 @@ if [[ -n "${RESUME_FROM_CHECKPOINT}" ]]; then
 fi
 if [[ "${USE_DEEPSPEED}" == "1" ]]; then
     echo "[INFO] DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG}"
+fi
+if [[ "${USE_PREPROCESSED_UINT8,,}" == "true" || "${USE_PREPROCESSED_UINT8}" == "1" ]]; then
+    echo "[INFO] USE_PREPROCESSED_UINT8=${USE_PREPROCESSED_UINT8}"
+    echo "[INFO] PREPROCESSED_DATA_DIR=${PREPROCESSED_DATA_DIR}"
 fi
 
 torchrun \
@@ -257,6 +291,7 @@ torchrun \
     "${EXTRA_MODEL_ARGS[@]}" \
     --dataset_name "${DATASET_PATH}" \
     --load_from_disk True \
+    "${PREPROCESSED_ARGS[@]}" \
     --dataloader_drop_last True \
     --do_train \
     --output_dir "${OUTPUT_DIR}" \
@@ -271,16 +306,17 @@ torchrun \
     --weight_decay "${WEIGHT_DECAY}" \
     --adam_beta1 0.9 \
     --adam_beta2 0.95 \
-    --optim adamw_torch \
+    --optim "${OPTIM}" \
     --logging_strategy steps \
     --logging_steps "${LOGGING_STEPS}" \
     "${SAVE_ARGS[@]}" \
+    "${EMA_ARGS[@]}" \
     --seed 1337 \
     "${GC_ARGS[@]}" \
     "${PRECISION_ARGS[@]}" \
     "${DEEPSPEED_ARGS[@]}" \
     --dataloader_num_workers "${DATALOADER_NUM_WORKERS}" \
-    --dataloader_persistent_workers True \
-    --dataloader_pin_memory False \
+    --dataloader_persistent_workers "${DATALOADER_PERSISTENT_WORKERS}" \
+    --dataloader_pin_memory "${DATALOADER_PIN_MEMORY}" \
     --report_to "${REPORT_TO}" \
     --run_name "${EXPERIMENT_NAME}"

@@ -121,12 +121,90 @@ class EnhancedTrainer(Trainer):
         self.ema_model = None
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        loss, outputs = super().compute_loss(
-            model,
-            inputs,
-            return_outputs=True,
-            num_items_in_batch=num_items_in_batch,
-        )
+        def _is_debug_enabled():
+            return os.environ.get("NEPA_NAN_DEBUG", "0") == "1"
+
+        def _rank():
+            try:
+                return int(os.environ.get("RANK", "0"))
+            except Exception:
+                return 0
+
+        def _tensor_stat(name, x):
+            if not torch.is_tensor(x):
+                print(f"[NAN-DEBUG][rank={_rank()}] {name}: type={type(x)}")
+                return
+
+            msg = (
+                f"[NAN-DEBUG][rank={_rank()}] {name}: "
+                f"shape={tuple(x.shape)}, dtype={x.dtype}, device={x.device}"
+            )
+
+            if torch.is_floating_point(x):
+                finite = torch.isfinite(x)
+                msg += (
+                    f", finite_all={finite.all().item()}"
+                    f", nan_any={torch.isnan(x).any().item()}"
+                    f", inf_any={torch.isinf(x).any().item()}"
+                )
+                if x.numel() > 0 and finite.any().item():
+                    xf = x.detach().float()
+                    msg += (
+                        f", min={xf[finite].min().item():.6g}"
+                        f", max={xf[finite].max().item():.6g}"
+                        f", mean={xf[finite].mean().item():.6g}"
+                    )
+            else:
+                msg += f", min={x.min().item() if x.numel() else 'NA'}, max={x.max().item() if x.numel() else 'NA'}"
+
+            print(msg, flush=True)
+
+        def _walk_outputs(prefix, obj, depth=0):
+            if depth > 3:
+                return
+            if torch.is_tensor(obj):
+                _tensor_stat(prefix, obj)
+            elif isinstance(obj, dict):
+                for k, v in obj.items():
+                    _walk_outputs(f"{prefix}.{k}", v, depth + 1)
+            elif hasattr(obj, "items"):
+                try:
+                    for k, v in obj.items():
+                        _walk_outputs(f"{prefix}.{k}", v, depth + 1)
+                except Exception:
+                    pass
+            elif isinstance(obj, (tuple, list)):
+                for i, v in enumerate(obj):
+                    _walk_outputs(f"{prefix}[{i}]", v, depth + 1)
+            else:
+                # ModelOutput may expose keys through to_tuple / to_dict
+                if hasattr(obj, "to_tuple"):
+                    try:
+                        for i, v in enumerate(obj.to_tuple()):
+                            _walk_outputs(f"{prefix}.to_tuple[{i}]", v, depth + 1)
+                    except Exception:
+                        pass
+
+        debug = _is_debug_enabled()
+
+        if debug:
+            print(f"[NAN-DEBUG][rank={_rank()}] compute_loss enter: trainer_global_step={self.state.global_step}", flush=True)
+            for k, v in inputs.items():
+                _tensor_stat(f"inputs[{k}]", v)
+
+        outputs = model(**inputs)
+
+        if isinstance(outputs, dict):
+            loss = outputs.get("loss", None)
+        else:
+            loss = outputs[0] if isinstance(outputs, (tuple, list)) else getattr(outputs, "loss", None)
+
+        if loss is None:
+            raise ValueError("Model did not return a loss. Cannot train NEPA pretraining model.")
+
+        if debug:
+            _walk_outputs("outputs", outputs)
+            _tensor_stat("loss_before_scalar_fix", loss)
 
         # DeepSpeed requires a 0-dim scalar loss tensor for backward().
         if not isinstance(loss, torch.Tensor):
@@ -135,6 +213,13 @@ class EnhancedTrainer(Trainer):
             loss = loss.mean()
         if loss.dim() != 0:
             loss = loss.reshape(())
+
+        if debug:
+            _tensor_stat("loss_after_scalar_fix", loss)
+
+        if torch.is_tensor(loss) and torch.is_floating_point(loss) and not torch.isfinite(loss).all():
+            print(f"[NAN-DEBUG][rank={_rank()}] Non-finite loss detected. Raising RuntimeError to stop.", flush=True)
+            raise RuntimeError("NEPA loss became NaN/Inf. See [NAN-DEBUG] logs above.")
 
         return (loss, outputs) if return_outputs else loss
 
@@ -262,20 +347,67 @@ class EnhancedTrainer(Trainer):
     def _load_from_checkpoint(self, resume_from_checkpoint, model=None):
         super()._load_from_checkpoint(resume_from_checkpoint, model)
 
+        # Debug RWKV non-persistent runtime state after checkpoint load.
+        base_model = self.model
+        if hasattr(base_model, "module"):
+            base_model = base_model.module
+
+        rwkv_core = None
+        try:
+            rwkv_core = base_model.rwkv_nepa.rwkv
+        except Exception:
+            rwkv_core = None
+
+        if rwkv_core is not None:
+            print(
+                "[RWKV-RESUME] after super load: "
+                f"training={rwkv_core.training}, "
+                f"layers_are_rescaled={getattr(rwkv_core, 'layers_are_rescaled', 'NA')}"
+            )
+
+            # HF RWKV uses a non-persistent layers_are_rescaled flag.
+            # If the model is in train mode but still marked as rescaled,
+            # call train(True) once to force the internal train-state transition.
+            if getattr(rwkv_core, "layers_are_rescaled", False):
+                print("[RWKV-RESUME] layers_are_rescaled=True; calling rwkv_core.train(True) to restore train-time scaling.")
+                rwkv_core.train(True)
+                print(
+                    "[RWKV-RESUME] after train(True): "
+                    f"training={rwkv_core.training}, "
+                    f"layers_are_rescaled={getattr(rwkv_core, 'layers_are_rescaled', 'NA')}"
+                )
+
         if self.use_ema:
             ema_ckpt = os.path.join(resume_from_checkpoint, "pytorch_model_ema.bin")
             if os.path.exists(ema_ckpt):
                 if self.ema_model is None:
                     import copy
                     self.ema_model = copy.deepcopy(self.model)
-                    for p in self.ema_model.parameters():
-                        p.requires_grad_(False)
+
+                self.ema_model.eval()
+                self.ema_model = self.ema_model.float()
+                for p in self.ema_model.parameters():
+                    p.requires_grad_(False)
+
                 state_dict = torch.load(ema_ckpt, map_location="cpu")
-                missing, unexpected = self.ema_model.load_state_dict(state_dict, strict=False)
-                if missing or unexpected:
-                    print(f"[EMA] Missing keys: {missing}, Unexpected keys: {unexpected}")
+                incompatible = self.ema_model.load_state_dict(state_dict, strict=True)
+                print(f"[EMA] Loaded EMA checkpoint from {ema_ckpt}")
+                print(f"[EMA] load_state_dict result: {incompatible}")
+
+                # Prevent an accidental EMA update before the first resumed optimizer step.
+                # TrainerState may not be restored yet inside _load_from_checkpoint,
+                # so read global_step directly from checkpoint/trainer_state.json.
+                trainer_state_path = os.path.join(resume_from_checkpoint, "trainer_state.json")
+                if os.path.exists(trainer_state_path):
+                    import json
+                    with open(trainer_state_path, "r") as f:
+                        trainer_state = json.load(f)
+                    self._ema_global_step = int(trainer_state.get("global_step", 0))
+                else:
+                    self._ema_global_step = int(getattr(self.state, "global_step", 0))
+                print(f"[EMA] _ema_global_step restored to {self._ema_global_step}")
             else:
-                print(f"[EMA] No EMA checkpoint found at {ema_ckpt}, starting fresh EMA.")
+                raise FileNotFoundError(f"[EMA] Expected EMA checkpoint not found: {ema_ckpt}")
 
 
 @dataclass
