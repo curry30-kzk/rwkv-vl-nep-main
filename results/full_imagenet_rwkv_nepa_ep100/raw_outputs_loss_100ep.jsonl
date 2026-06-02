@@ -1,0 +1,1 @@
+{"epoch": 100.0, "finite_all": true, "gradient_accumulation_steps": 16, "logging_note": "raw model outputs.loss before Trainer gradient-accumulation scaling/aggregation", "loss_dtype": "torch.float32", "loss_shape": [], "raw_outputs_loss": -0.9351260662078857, "raw_outputs_loss_repr": "-0.9351260662078857", "scalar_finite": true, "trainer_global_step_before_update": 31300}

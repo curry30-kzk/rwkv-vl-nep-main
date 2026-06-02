@@ -78,3 +78,28 @@ env_backup*/
 *.bak
 *.bak_*
 *.tmp
+
+# Large training artifacts
+outputs_pretrain/**/model.safetensors
+outputs_pretrain/**/pytorch_model_ema.bin
+outputs_pretrain/**/optimizer.pt
+outputs_pretrain/**/scheduler.pt
+outputs_pretrain/**/rng_state_*.pth
+outputs_pretrain/**/checkpoint-*/
+outputs_pilot10pct/**/checkpoint-*/
+outputs/**/checkpoint-*/
+
+# Dataset and cache
+data/
+pilot_data/
+processed_data/
+hf_cache/
+.hf_cache_kernel_test/
+.torch_extensions_rwkv/
+.kernel_pkg_test/
+*.npy
+*.arrow
+
+# Runtime logs/cache
+__pycache__/
+*.pyc

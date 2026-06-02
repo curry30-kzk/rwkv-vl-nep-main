@@ -1,0 +1,9 @@
+]633;C]633;E;echo "SHA256 manifest for large checkpoint files"SHA256 manifest for large checkpoint files
+Generated at: Tue 02 Jun 2026 02:48:24 PM CST
+
+3bea5f1c802b1b4a76ba9a0180fc2f22e972d081f6c87f115a3300931ab65c28  /public/home/ssjxkzk/rwkv-vl-nep-main/rwkv-vl-nep-main/outputs_pretrain/rwkv_nepa_full_pretrain_ep1600_bs4096_fp32tf32_wkv_b64acc16_4gpu_seed42/checkpoint-21910/model.safetensors
+8347b15c32dd43fbdce3ce8d332afe747325135b7a517b6b6f4d298d55621d56  /public/home/ssjxkzk/rwkv-vl-nep-main/rwkv-vl-nep-main/outputs_pretrain/rwkv_nepa_full_pretrain_ep1600_bs4096_fp32tf32_wkv_b64acc16_4gpu_seed42/checkpoint-21910/pytorch_model_ema.bin
+686a03aa11aafc67dfdf460ef45b31bd75222bc858e2391ad9aa09a96e5ac14b  /public/home/ssjxkzk/rwkv-vl-nep-main/rwkv-vl-nep-main/outputs_pretrain/rwkv_nepa_full_pretrain_ep1600_bs4096_fp32tf32_wkv_b64acc16_4gpu_seed42/checkpoint-25040/model.safetensors
+08536b984e0bfa34e35db50a7d6d82bdb7781e63daa27c2f6843db561813a6f4  /public/home/ssjxkzk/rwkv-vl-nep-main/rwkv-vl-nep-main/outputs_pretrain/rwkv_nepa_full_pretrain_ep1600_bs4096_fp32tf32_wkv_b64acc16_4gpu_seed42/checkpoint-25040/pytorch_model_ema.bin
+eedd90f7dc80733aadc4255f9a7e95ed0b7eec914817843678099bafcbaf68bc  /public/home/ssjxkzk/rwkv-vl-nep-main/rwkv-vl-nep-main/outputs_pretrain/rwkv_nepa_full_pretrain_ep1600_bs4096_fp32tf32_wkv_b64acc16_4gpu_seed42/checkpoint-31300_ep100_rawloss_verified/model.safetensors
+6b26d81834f0d60a8f57323efd961074765df3af0e51635a72e44961f615314d  /public/home/ssjxkzk/rwkv-vl-nep-main/rwkv-vl-nep-main/outputs_pretrain/rwkv_nepa_full_pretrain_ep1600_bs4096_fp32tf32_wkv_b64acc16_4gpu_seed42/checkpoint-31300_ep100_rawloss_verified/pytorch_model_ema.bin

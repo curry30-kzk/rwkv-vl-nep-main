@@ -1,0 +1,53 @@
+]633;C]633;E;echo "RWKV-NEPA full ImageNet formal pretraining checkpoints"RWKV-NEPA full ImageNet formal pretraining checkpoints
+Generated at: Tue 02 Jun 2026 02:48:24 PM CST
+
+[Main pretraining directory]
+/public/home/ssjxkzk/rwkv-vl-nep-main/rwkv-vl-nep-main/outputs_pretrain/rwkv_nepa_full_pretrain_ep1600_bs4096_fp32tf32_wkv_b64acc16_4gpu_seed42
+
+[70ep checkpoint]
+/public/home/ssjxkzk/rwkv-vl-nep-main/rwkv-vl-nep-main/outputs_pretrain/rwkv_nepa_full_pretrain_ep1600_bs4096_fp32tf32_wkv_b64acc16_4gpu_seed42/checkpoint-21910
+total 1.4G
+-rw-rw-r-- 1 ssjxkzk ssjxkzk  709 May 23 00:12 config.json
+-rw-rw-r-- 1 ssjxkzk ssjxkzk 354M May 23 00:12 model.safetensors
+-rw-rw-r-- 1 ssjxkzk ssjxkzk 707M May 23 00:12 optimizer.pt
+-rw-rw-r-- 1 ssjxkzk ssjxkzk  567 May 23 00:12 preprocessor_config.json
+-rw-rw-r-- 1 ssjxkzk ssjxkzk 354M May 23 00:12 pytorch_model_ema.bin
+-rw-rw-r-- 1 ssjxkzk ssjxkzk  16K May 23 00:12 rng_state_0.pth
+-rw-rw-r-- 1 ssjxkzk ssjxkzk  16K May 23 00:12 rng_state_1.pth
+-rw-rw-r-- 1 ssjxkzk ssjxkzk  16K May 23 00:12 rng_state_2.pth
+-rw-rw-r-- 1 ssjxkzk ssjxkzk  16K May 23 00:12 rng_state_3.pth
+-rw-rw-r-- 1 ssjxkzk ssjxkzk 1.5K May 23 00:12 scheduler.pt
+-rw-rw-r-- 1 ssjxkzk ssjxkzk 191K May 23 00:12 trainer_state.json
+-rw-rw-r-- 1 ssjxkzk ssjxkzk 5.9K May 23 00:12 training_args.bin
+
+[80ep checkpoint]
+/public/home/ssjxkzk/rwkv-vl-nep-main/rwkv-vl-nep-main/outputs_pretrain/rwkv_nepa_full_pretrain_ep1600_bs4096_fp32tf32_wkv_b64acc16_4gpu_seed42/checkpoint-25040
+total 1.4G
+-rw-rw-r-- 1 ssjxkzk ssjxkzk  709 May 29 01:35 config.json
+-rw-rw-r-- 1 ssjxkzk ssjxkzk 354M May 29 01:35 model.safetensors
+-rw-rw-r-- 1 ssjxkzk ssjxkzk 707M May 29 01:35 optimizer.pt
+-rw-rw-r-- 1 ssjxkzk ssjxkzk  567 May 29 01:35 preprocessor_config.json
+-rw-rw-r-- 1 ssjxkzk ssjxkzk 354M May 29 01:35 pytorch_model_ema.bin
+-rw-rw-r-- 1 ssjxkzk ssjxkzk  16K May 29 01:35 rng_state_0.pth
+-rw-rw-r-- 1 ssjxkzk ssjxkzk  16K May 29 01:35 rng_state_1.pth
+-rw-rw-r-- 1 ssjxkzk ssjxkzk  16K May 29 01:35 rng_state_2.pth
+-rw-rw-r-- 1 ssjxkzk ssjxkzk  16K May 29 01:35 rng_state_3.pth
+-rw-rw-r-- 1 ssjxkzk ssjxkzk 1.5K May 29 01:35 scheduler.pt
+-rw-rw-r-- 1 ssjxkzk ssjxkzk 218K May 29 01:35 trainer_state.json
+-rw-rw-r-- 1 ssjxkzk ssjxkzk 6.1K May 29 01:35 training_args.bin
+
+[100ep verified checkpoint]
+/public/home/ssjxkzk/rwkv-vl-nep-main/rwkv-vl-nep-main/outputs_pretrain/rwkv_nepa_full_pretrain_ep1600_bs4096_fp32tf32_wkv_b64acc16_4gpu_seed42/checkpoint-31300_ep100_rawloss_verified
+total 1.4G
+-rw-rw-r-- 1 ssjxkzk ssjxkzk  709 May 26 10:38 config.json
+-rw-rw-r-- 1 ssjxkzk ssjxkzk 354M May 26 10:38 model.safetensors
+-rw-rw-r-- 1 ssjxkzk ssjxkzk 707M May 26 10:38 optimizer.pt
+-rw-rw-r-- 1 ssjxkzk ssjxkzk  567 May 26 10:38 preprocessor_config.json
+-rw-rw-r-- 1 ssjxkzk ssjxkzk 354M May 26 10:38 pytorch_model_ema.bin
+-rw-rw-r-- 1 ssjxkzk ssjxkzk  16K May 26 10:38 rng_state_0.pth
+-rw-rw-r-- 1 ssjxkzk ssjxkzk  16K May 26 10:38 rng_state_1.pth
+-rw-rw-r-- 1 ssjxkzk ssjxkzk  16K May 26 10:38 rng_state_2.pth
+-rw-rw-r-- 1 ssjxkzk ssjxkzk  16K May 26 10:38 rng_state_3.pth
+-rw-rw-r-- 1 ssjxkzk ssjxkzk 1.5K May 26 10:38 scheduler.pt
+-rw-rw-r-- 1 ssjxkzk ssjxkzk 272K May 26 10:38 trainer_state.json
+-rw-rw-r-- 1 ssjxkzk ssjxkzk 6.1K May 26 10:38 training_args.bin
