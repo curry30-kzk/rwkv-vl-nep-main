@@ -151,93 +151,190 @@ class EnhancedTrainer(Trainer):
         else:
             return super().get_eval_dataloader(eval_dataset)
 
+
     def create_optimizer(self):
         if self.optimizer is not None:
             return self.optimizer
 
-        from collections import defaultdict
+        # [RWKV_SAFE_OPTIMIZER_PATCH]
+        # Enable with:
+        #   RWKV_FT_PARAM_GROUPS=1
+        #
+        # Purpose:
+        #   Stabilize RWKV fine-tuning by using separate lr/wd groups:
+        #   - classifier / fc_norm: larger LR
+        #   - normal backbone weights: tiny LR
+        #   - RWKV special params: no weight decay and very small or zero LR
+        use_rwkv_safe_groups = os.environ.get("RWKV_FT_PARAM_GROUPS", "0").lower() in (
+            "1", "true", "yes", "rwkv", "safe", "rwkv_safe"
+        )
 
-        base_lr = self.base_lr
-        head_lr = self.head_lr
-        llrd = self.llrd
-        weight_decay = self.weight_decay
+        if use_rwkv_safe_groups:
+            decay_params = set(self.get_decay_parameter_names(self.model))
 
-        opt_model = self.model_wrapped if is_sagemaker_mp_enabled() else self.model
-        decay_parameters = self.get_decay_parameter_names(opt_model)
+            head_lr = float(os.environ.get("RWKV_HEAD_LR", self.args.learning_rate))
+            backbone_lr = float(os.environ.get("RWKV_BACKBONE_LR", "1e-6"))
+            special_lr = float(os.environ.get("RWKV_SPECIAL_LR", "0.0"))
 
-        no_llrd = []
+            wd = float(self.args.weight_decay)
 
-        head_param_ids = set()
-        if hasattr(self.model, "classifier"):
-            head_param_ids.update(id(p) for p in self.model.classifier.parameters())
+            special_keywords = [
+                "time_decay",
+                "time_first",
+                "time_mix",
+                ".ln",
+                "ln1",
+                "ln2",
+                "layernorm",
+                "layer_norm",
+                "rmsnorm",
+                "norm",
+                "bias",
+            ]
 
-        final_ln_ids = set()
-        if hasattr(self.model, "vit_nepa") and hasattr(self.model.vit_nepa, "layernorm"):
-            final_ln_ids.update(id(p) for p in self.model.vit_nepa.layernorm.parameters())
+            groups = {
+                "head_decay": {
+                    "params": [],
+                    "lr": head_lr,
+                    "weight_decay": wd,
+                },
+                "head_no_decay": {
+                    "params": [],
+                    "lr": head_lr,
+                    "weight_decay": 0.0,
+                },
+                "backbone_decay": {
+                    "params": [],
+                    "lr": backbone_lr,
+                    "weight_decay": wd,
+                },
+                "backbone_no_decay": {
+                    "params": [],
+                    "lr": backbone_lr,
+                    "weight_decay": 0.0,
+                },
+                "rwkv_special": {
+                    "params": [],
+                    "lr": special_lr,
+                    "weight_decay": 0.0,
+                },
+            }
 
-        embeddings_ids = set()
-        if hasattr(self.model, "vit_nepa") and hasattr(self.model.vit_nepa, "embeddings"):
-            embeddings_ids.update(id(p) for p in self.model.vit_nepa.embeddings.parameters())
+            group_name_by_param_id = {}
 
-        layers_param_ids = []
-        mlp_layers_param_ids = []
-        if hasattr(self.model, "vit_nepa") and hasattr(self.model.vit_nepa, "encoder") and hasattr(self.model.vit_nepa.encoder, "layer"):
-            encoder_layers = list(self.model.vit_nepa.encoder.layer)
-            for blk in encoder_layers:
-                layers_param_ids.append(set(id(p) for p in blk.parameters()))
-                mlp_set = set()
-                if hasattr(blk, "intermediate"):
-                    mlp_set.update(id(p) for p in blk.intermediate.parameters())
-                if hasattr(blk, "output"):
-                    mlp_set.update(id(p) for p in blk.output.parameters())
-                mlp_layers_param_ids.append(mlp_set)
-        else:
-            encoder_layers = []
-        num_layers = len(encoder_layers)
+            for name, param in self.model.named_parameters():
+                if not param.requires_grad:
+                    continue
 
-        grouped = defaultdict(list)
+                lname = name.lower()
+                is_head = (
+                    name == "classifier.weight"
+                    or name == "classifier.bias"
+                    or name == "fc_norm.weight"
+                    or name == "fc_norm.bias"
+                    or ".classifier." in name
+                    or ".fc_norm." in name
+                )
 
-        for full_name, p in opt_model.named_parameters():
+                is_special = any(k in lname for k in special_keywords)
+                is_decay = name in decay_params
+
+                if is_head:
+                    if is_decay and not lname.endswith("bias") and "norm" not in lname:
+                        gname = "head_decay"
+                    else:
+                        gname = "head_no_decay"
+                elif is_special:
+                    gname = "rwkv_special"
+                else:
+                    gname = "backbone_decay" if is_decay else "backbone_no_decay"
+
+                groups[gname]["params"].append(param)
+                group_name_by_param_id[id(param)] = gname
+
+            optimizer_grouped_parameters = []
+            logger.warning("[RWKV_SAFE_OPTIMIZER_PATCH] enabled")
+            logger.warning(
+                "[RWKV_SAFE_OPTIMIZER_PATCH] head_lr=%s backbone_lr=%s special_lr=%s weight_decay=%s",
+                head_lr,
+                backbone_lr,
+                special_lr,
+                wd,
+            )
+
+            total_trainable = 0
+            for gname, group in groups.items():
+                n_params = sum(p.numel() for p in group["params"])
+                total_trainable += n_params
+                logger.warning(
+                    "[RWKV_SAFE_OPTIMIZER_PATCH] group=%s tensors=%s numel=%s lr=%s wd=%s",
+                    gname,
+                    len(group["params"]),
+                    n_params,
+                    group["lr"],
+                    group["weight_decay"],
+                )
+                if group["params"]:
+                    optimizer_grouped_parameters.append(group)
+
+            logger.warning("[RWKV_SAFE_OPTIMIZER_PATCH] total trainable numel=%s", total_trainable)
+
+            # Print representative parameter names for audit.
+            printed = {k: 0 for k in groups}
+            for name, param in self.model.named_parameters():
+                gname = group_name_by_param_id.get(id(param))
+                if gname is not None and printed[gname] < 12:
+                    logger.warning("[RWKV_SAFE_OPTIMIZER_PATCH] %s -> %s", name, gname)
+                    printed[gname] += 1
+
+            optimizer_cls, optimizer_kwargs = self.get_optimizer_cls_and_kwargs(self.args)
+            self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
+            return self.optimizer
+
+        # Original behavior for non-RWKV-safe mode.
+        if getattr(self, "embed_lr", None) is None:
+            return super().create_optimizer()
+
+        decay_params = set(self.get_decay_parameter_names(self.model))
+        backbone_prefix = getattr(self.model, "base_model_prefix", None)
+        backbone = getattr(self.model, backbone_prefix, None) if isinstance(backbone_prefix, str) else None
+        if backbone is None and hasattr(self.model, "vit_nepa"):
+            backbone_prefix = "vit_nepa"
+            backbone = self.model.vit_nepa
+        if backbone is None or backbone_prefix is None:
+            raise ValueError(
+                "Could not resolve backbone module for embed_lr grouping. "
+                f"Got base_model_prefix={getattr(self.model, 'base_model_prefix', None)!r}."
+            )
+
+        embed_params = set(f"{backbone_prefix}.embeddings.{n}" for n, _ in backbone.embeddings.named_parameters())
+
+        wd = self.args.weight_decay
+        base_lr = self.args.learning_rate
+
+        groups = [
+            {"params": [], "weight_decay": wd,  "lr": self.embed_lr},
+            {"params": [], "weight_decay": 0.0, "lr": self.embed_lr},
+            {"params": [], "weight_decay": wd,  "lr": base_lr},
+            {"params": [], "weight_decay": 0.0, "lr": base_lr},
+        ]
+
+        for name, p in self.model.named_parameters():
             if not p.requires_grad:
                 continue
+            is_decay = name in decay_params
+            is_embed = name in embed_params
 
-            if any(tag in full_name for tag in no_llrd):
-                lr_base = base_lr
-                scale = 0
-            elif id(p) in head_param_ids or id(p) in final_ln_ids:
-                lr_base = head_lr
-                scale = 0
+            if is_embed and is_decay:
+                groups[0]["params"].append(p)
+            elif is_embed and not is_decay:
+                groups[1]["params"].append(p)
+            elif (not is_embed) and is_decay:
+                groups[2]["params"].append(p)
             else:
-                assigned = False
-                for i in range(num_layers):
-                    if id(p) in layers_param_ids[i]:
-                        lr_base = base_lr
-                        scale = (num_layers - 1 - i)
-                        assigned = True
-                        break
-                if not assigned:
-                    if id(p) in embeddings_ids:
-                        lr_base = base_lr
-                        scale = num_layers
-                    else:
-                        lr_base = base_lr
-                        scale = 0
+                groups[3]["params"].append(p)
 
-            if p.ndim <= 1:
-                wd = 0.0
-            else:
-                wd = weight_decay if full_name in decay_parameters else 0.0
-            grouped[(lr_base, wd, scale)].append(p)
-
-        optimizer_grouped_parameters = []
-        for (lr_base, wd, scale), params in grouped.items():
-            optimizer_grouped_parameters.append({
-                "params": params,
-                "lr": lr_base,
-                "weight_decay": wd,
-                "llrd": llrd,
-                "llrd_scale": scale,
-            })
+        optimizer_grouped_parameters = [g for g in groups if g["params"]]
 
         optimizer_cls, optimizer_kwargs = self.get_optimizer_cls_and_kwargs(self.args)
         self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
@@ -576,6 +673,18 @@ def main():
     # We now keep distinct sets of args, for a cleaner separation of concerns.
 
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
+
+    # [RWKV_HEAD_ONLY_PATCH] Extra CLI arg not handled by HfArgumentParser:
+    # --trainable all | none | head_only
+    _rwkv_trainable_mode = os.environ.get("RWKV_CLS_TRAINABLE", "all")
+    if "--trainable" in sys.argv:
+        _idx = sys.argv.index("--trainable")
+        if _idx + 1 >= len(sys.argv):
+            raise ValueError("--trainable requires a value: all / none / head_only")
+        _rwkv_trainable_mode = sys.argv[_idx + 1]
+        del sys.argv[_idx:_idx + 2]
+
+
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
         # If we pass only one argument to the script and it's the path to a json file,
         # let's parse it to get our arguments.
@@ -814,6 +923,100 @@ def main():
             size = int(input_size / data_args.crop_pct)
         logger.info(f"Overriding resize_size to {size} from crop_pct {data_args.crop_pct}")
         data_args.resize_size = size
+
+
+    # [RWKV_HEAD_ONLY_PATCH] Apply trainable mode after model creation.
+    # "none"/"head_only" means: freeze RWKV backbone, train only fc_norm + classifier.
+    if _rwkv_trainable_mode in ("none", "head", "head_only", "classifier"):
+        for _n, _p in model.named_parameters():
+            _p.requires_grad = ("classifier" in _n) or ("fc_norm" in _n)
+
+        _trainable = [(n, p.numel()) for n, p in model.named_parameters() if p.requires_grad]
+        _total_params = sum(p.numel() for p in model.parameters())
+        _trainable_params = sum(numel for _, numel in _trainable)
+
+        logger.warning("[RWKV_HEAD_ONLY_PATCH] trainable mode = %s", _rwkv_trainable_mode)
+        logger.warning(
+            "[RWKV_HEAD_ONLY_PATCH] trainable params = %s / %s (%.4f%%)",
+            _trainable_params,
+            _total_params,
+            100.0 * _trainable_params / max(1, _total_params),
+        )
+        logger.warning("[RWKV_HEAD_ONLY_PATCH] trainable parameter names:")
+        for _name, _numel in _trainable:
+            logger.warning("  %s  numel=%s", _name, _numel)
+
+    elif _rwkv_trainable_mode in ("rwkv_safe", "safe", "safe_backbone", "partial"):
+        # [RWKV_SAFE_TRAINABLE_PATCH]
+        # Keep ordinary backbone weights trainable, but freeze RWKV special/norm/bias params.
+        # This is stricter than lr=0: frozen params do not participate in backward or optimizer state.
+        _special_keywords = [
+            "time_decay",
+            "time_first",
+            "time_mix",
+            ".ln",
+            "ln1",
+            "ln2",
+            "pre_ln",
+            "layernorm",
+            "layer_norm",
+            "rmsnorm",
+            "norm",
+            "bias",
+        ]
+
+        _frozen = []
+        _trainable = []
+
+        for _n, _p in model.named_parameters():
+            _lname = _n.lower()
+            _is_head = (
+                _n == "classifier.weight"
+                or _n == "classifier.bias"
+                or _n == "fc_norm.weight"
+                or _n == "fc_norm.bias"
+                or ".classifier." in _n
+                or ".fc_norm." in _n
+            )
+            _is_special = any(_k in _lname for _k in _special_keywords)
+
+            if _is_head:
+                _p.requires_grad = True
+                _trainable.append((_n, _p.numel()))
+            elif _is_special:
+                _p.requires_grad = False
+                _frozen.append((_n, _p.numel()))
+            else:
+                _p.requires_grad = True
+                _trainable.append((_n, _p.numel()))
+
+        _total_params = sum(p.numel() for p in model.parameters())
+        _trainable_params = sum(numel for _, numel in _trainable)
+        _frozen_params = sum(numel for _, numel in _frozen)
+
+        logger.warning("[RWKV_SAFE_TRAINABLE_PATCH] trainable mode = %s", _rwkv_trainable_mode)
+        logger.warning(
+            "[RWKV_SAFE_TRAINABLE_PATCH] trainable params = %s / %s (%.4f%%)",
+            _trainable_params,
+            _total_params,
+            100.0 * _trainable_params / max(1, _total_params),
+        )
+        logger.warning("[RWKV_SAFE_TRAINABLE_PATCH] frozen special params = %s", _frozen_params)
+
+        logger.warning("[RWKV_SAFE_TRAINABLE_PATCH] first trainable parameter names:")
+        for _name, _numel in _trainable[:30]:
+            logger.warning("  TRAIN %s  numel=%s", _name, _numel)
+
+        logger.warning("[RWKV_SAFE_TRAINABLE_PATCH] first frozen parameter names:")
+        for _name, _numel in _frozen[:30]:
+            logger.warning("  FREEZE %s  numel=%s", _name, _numel)
+
+
+    elif _rwkv_trainable_mode in ("all", "full"):
+        logger.warning("[RWKV_HEAD_ONLY_PATCH] trainable mode = all/full; all parameters are trainable.")
+    else:
+        raise ValueError(f"Unknown --trainable mode: {_rwkv_trainable_mode}. Use all / none / head_only.")
+
 
     # Define torchvision transforms to be applied to each image.
     if isinstance(image_processor, TimmWrapperImageProcessor):

@@ -13,6 +13,7 @@
 
 import collections.abc
 from dataclasses import dataclass
+import os
 import warnings
 from typing import Optional, Union
 
@@ -20,6 +21,7 @@ import torch
 from torch import nn
 
 from transformers.modeling_outputs import ImageClassifierOutput, ModelOutput
+from transformers.models.rwkv import modeling_rwkv as hf_rwkv
 from transformers.models.rwkv.modeling_rwkv import RwkvModel, RwkvPreTrainedModel
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, logging
@@ -35,6 +37,39 @@ from ..vit_nepa.modeling_vit_nepa import (
 
 
 logger = logging.get_logger(__name__)
+
+
+def _maybe_force_torch_wkv() -> None:
+    value = os.environ.get("RWKV_NEPA_FORCE_TORCH_WKV", "0").strip().lower()
+    if value not in {"1", "true", "yes", "on"}:
+        return
+    if getattr(hf_rwkv, "_rwkv_nepa_force_torch_wkv", False):
+        return
+
+    def _torch_wkv_linear_attention(time_decay, time_first, key, value, state=None, return_state=False):
+        return hf_rwkv.rwkv_linear_attention_cpu(
+            time_decay,
+            time_first,
+            key,
+            value,
+            state=state,
+            return_state=return_state,
+        )
+
+    def _skip_wkv_cuda_kernel(context_length):
+        logger.warning_once(
+            "RWKV_NEPA_FORCE_TORCH_WKV=1 is set; skipping custom RWKV CUDA kernel load "
+            f"for context_length={context_length}."
+        )
+
+    hf_rwkv.rwkv_linear_attention = _torch_wkv_linear_attention
+    hf_rwkv.load_wkv_cuda_kernel = _skip_wkv_cuda_kernel
+    hf_rwkv.rwkv_cuda_kernel = None
+    hf_rwkv._rwkv_nepa_force_torch_wkv = True
+    logger.warning("RWKV_NEPA_FORCE_TORCH_WKV=1: using torch fallback WKV attention.")
+
+
+_maybe_force_torch_wkv()
 
 
 class RwkvNepaCoordPositionEmbedding(nn.Module):

@@ -23,6 +23,7 @@
 # ///
 
 import logging
+import json
 import os
 import sys
 from dataclasses import dataclass, field
@@ -112,6 +113,8 @@ class EnhancedTrainer(Trainer):
         embed_lr=None,
         ema_decay=0.9999,
         use_ema=True,
+        raw_loss_log_steps=20,
+        raw_loss_log_file=None,
         **kwargs
     ):
         super().__init__(*args, **kwargs)
@@ -119,16 +122,68 @@ class EnhancedTrainer(Trainer):
         self.ema_decay = ema_decay
         self.use_ema = use_ema
         self.ema_model = None
+        self.raw_loss_log_steps = max(0, int(raw_loss_log_steps or 0))
+        self.raw_loss_log_file = raw_loss_log_file
+        self._raw_loss_last_logged_step = None
+        self._raw_loss_log_announced = False
+
+    @staticmethod
+    def _rank():
+        try:
+            return int(os.environ.get("RANK", "0"))
+        except Exception:
+            return 0
+
+    def _maybe_log_raw_loss(self, loss):
+        if self.raw_loss_log_steps <= 0 or self._rank() != 0:
+            return
+        if not torch.is_tensor(loss):
+            return
+
+        global_step = int(getattr(self.state, "global_step", 0) or 0)
+        if self._raw_loss_last_logged_step == global_step:
+            return
+        if self._raw_loss_last_logged_step is not None and global_step % self.raw_loss_log_steps != 0:
+            return
+
+        loss_float = loss.detach().float()
+        scalar_loss = loss_float.mean() if loss_float.dim() != 0 else loss_float
+        finite_all = torch.isfinite(loss_float).all().item()
+        scalar_finite = torch.isfinite(scalar_loss).item()
+        scalar_value = scalar_loss.item()
+
+        output_path = self.raw_loss_log_file
+        if output_path is None:
+            output_path = os.path.join(self.args.output_dir, "raw_outputs_loss.jsonl")
+        output_dir = os.path.dirname(os.path.abspath(output_path))
+        os.makedirs(output_dir, exist_ok=True)
+
+        if not self._raw_loss_log_announced:
+            print(f"[RAW-LOSS] rank0 logging raw outputs.loss to {output_path}", flush=True)
+            self._raw_loss_log_announced = True
+
+        record = {
+            "trainer_global_step_before_update": global_step,
+            "epoch": getattr(self.state, "epoch", None),
+            "raw_outputs_loss": scalar_value if scalar_finite else None,
+            "raw_outputs_loss_repr": str(scalar_value),
+            "scalar_finite": bool(scalar_finite),
+            "finite_all": bool(finite_all),
+            "loss_shape": list(loss.shape),
+            "loss_dtype": str(loss.dtype),
+            "gradient_accumulation_steps": self.args.gradient_accumulation_steps,
+            "logging_note": "raw model outputs.loss before Trainer gradient-accumulation scaling/aggregation",
+        }
+        with open(output_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, allow_nan=False, sort_keys=True) + "\n")
+        self._raw_loss_last_logged_step = global_step
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         def _is_debug_enabled():
             return os.environ.get("NEPA_NAN_DEBUG", "0") == "1"
 
         def _rank():
-            try:
-                return int(os.environ.get("RANK", "0"))
-            except Exception:
-                return 0
+            return self._rank()
 
         def _tensor_stat(name, x):
             if not torch.is_tensor(x):
@@ -201,6 +256,8 @@ class EnhancedTrainer(Trainer):
 
         if loss is None:
             raise ValueError("Model did not return a loss. Cannot train NEPA pretraining model.")
+
+        self._maybe_log_raw_loss(loss)
 
         if debug:
             _walk_outputs("outputs", outputs)
@@ -526,6 +583,14 @@ class ModelArguments:
         default=None,
         metadata={"help": "Freeze/unfreeze parameters via model._set_trainable (timemix|all|none)."},
     )
+    raw_loss_log_steps: int = field(
+        default=20,
+        metadata={"help": "Log raw model outputs.loss every N optimizer steps on rank0. Set 0 to disable."},
+    )
+    raw_loss_log_file: Optional[str] = field(
+        default=None,
+        metadata={"help": "Optional JSONL path for raw outputs.loss monitor. Defaults to output_dir/raw_outputs_loss.jsonl."},
+    )
 
 
 def main():
@@ -818,6 +883,8 @@ def main():
         processing_class=image_processor,
         data_collator=collate_fn,
         embed_lr=model_args.embed_lr,
+        raw_loss_log_steps=model_args.raw_loss_log_steps,
+        raw_loss_log_file=model_args.raw_loss_log_file,
     )
 
     # Training
